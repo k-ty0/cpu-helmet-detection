@@ -23,7 +23,7 @@ import cv2  # OpenCV: 카메라 영상 읽기, 박스 그리기, 화면 띄우�
 from ultralytics import YOLO
 
 ROOT = Path(__file__).resolve().parent.parent  # 저장소 맨 위 폴더
-DEFAULT_MODEL = ROOT / "runs" / "helmet-2" / "weights" / "best.pt"  # 50에폭 학습 모델
+DEFAULT_MODEL = ROOT / "runs" / "helmet" / "weights" / "best.pt"  # 50에폭 학습 모델
 IMAGES_DIR = ROOT / "images"  # 결과 사진을 저장할 폴더
 WINDOW = "helmet detection"  # 화면 창 이름
 
