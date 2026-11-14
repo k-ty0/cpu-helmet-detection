@@ -1,5 +1,5 @@
 """
-PyTorch / ONNX / OpenVINO 세 모델의 정확도(mAP)를 같은 조건에서 비교하는 코드
+PyTorch / ONNX / OpenVINO / OpenVINO INT8 모델의 정확도(mAP)를 같은 조건에서 비교하는 코드
 
 형식만 바꾼 모델이 원래 모델과 같은 점수를 내는지 검사용 사진(200장)으로 확인해요.
 먼저 2_optimize/export.py 를 실행해서 ONNX, OpenVINO 모델을 만들어 두어야 해요.
@@ -23,6 +23,7 @@ MODELS = {
     "PyTorch": WEIGHTS / "best.pt",
     "ONNX": WEIGHTS / "best.onnx",
     "OpenVINO": WEIGHTS / "best_openvino_model",
+    "INT8": WEIGHTS / "best_int8_openvino_model",  # OpenVINO INT8 양자화 모델
 }
 
 

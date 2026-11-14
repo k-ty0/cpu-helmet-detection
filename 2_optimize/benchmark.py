@@ -1,15 +1,15 @@
 """
-PyTorch / ONNX / OpenVINO 세 모델의 CPU 속도를 같은 조건에서 비교하는 코드
+PyTorch / ONNX / OpenVINO / OpenVINO INT8 모델의 CPU 속도를 같은 조건에서 비교하는 코드
 
 먼저 2_optimize/export.py 를 실행해서 ONNX, OpenVINO 모델을 만들어 두어야 해요.
 
 공정하게 재기 위해:
-- 세 모델 모두 같은 검사용 사진(기본 200장)을 사용해요.
+- 모든 모델이 같은 검사용 사진(기본 200장)을 사용해요.
 - 사진은 미리 메모리에 올려 둬요. (파일 읽는 시간이 섞이지 않게)
 - 처음 몇 장(워밍업)은 준비 때문에 느려서 측정에서 빼요.
 - 여러 번(기본 3회) 반복하고, 매번 모델 순서를 바꿔요. (먼저 잰 모델만 유리하지 않게)
 - 모델 하나를 잴 때마다 새 프로그램(프로세스)을 따로 띄워요.
-  한 프로그램 안에서 세 모델을 같이 돌리면, ONNX Runtime·OpenVINO 가 끝난 뒤에도
+  한 프로그램 안에서 여러 모델을 같이 돌리면, ONNX Runtime·OpenVINO 가 끝난 뒤에도
   남겨 두는 일꾼(스레드)들이 CPU 를 차지해서 PyTorch 가 2배 가까이 느려지는 걸 확인했어요.
 
 실행 방법 (저장소 맨 위 폴더에서):
@@ -36,6 +36,7 @@ MODELS = {
     "PyTorch": WEIGHTS / "best.pt",
     "ONNX": WEIGHTS / "best.onnx",
     "OpenVINO": WEIGHTS / "best_openvino_model",
+    "INT8": WEIGHTS / "best_int8_openvino_model",  # OpenVINO INT8 양자화 모델
 }
 
 
@@ -108,7 +109,7 @@ def main():
 
     names = list(MODELS)
     for r in range(args.rounds):
-        # 매 회차마다 순서를 한 칸씩 돌려요 (1회: P,O,V  2회: O,V,P  3회: V,P,O)
+        # 매 회차마다 순서를 한 칸씩 돌려요 (예: 1회 P,O,V,I → 2회 O,V,I,P → 3회 V,I,P,O)
         order = names[r % len(names):] + names[:r % len(names)]
         print(f"\n[{r + 1}회차] 순서: {' → '.join(order)}")
         for name in order:

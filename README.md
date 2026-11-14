@@ -15,7 +15,7 @@ GPU 없이 **일반 노트북 CPU**에서 실시간으로 동작하는 **안전�
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 1 | YOLO로 안전모 착용/미착용 학습 + 웹캠 데모 (`1_train/`) | ✅ 완료 |
-| 2 | OpenVINO / ONNX로 CPU 최적화, 속도 비교 (`2_optimize/`) | 🔄 진행 중 (변환·속도·정확도 비교 완료) |
+| 2 | OpenVINO / ONNX로 CPU 최적화, INT8 양자화, 속도·정확도 비교 (`2_optimize/`) | 🔄 진행 중 (INT8까지 비교 완료) |
 | 3 | 위험 구역 경고 시스템 (`3_alert_system/`) | ⏳ 예정 |
 
 ---
@@ -80,42 +80,53 @@ helmet(0.880)보다 no_helmet(0.709) 점수가 낮고, 특히 no_helmet의 Recal
 
 ## 2단계 결과: CPU 최적화 (진행 중)
 
-1단계에서 학습한 모델(`best.pt`)을 **ONNX**와 **OpenVINO** 형식으로 바꾸고, 같은 조건에서 CPU 속도를 비교했습니다.
+1단계에서 학습한 모델(`best.pt`)을 CPU에서 빠르게 돌릴 수 있는 형식으로 바꾸고, 같은 조건에서 속도와 정확도를 비교했습니다.
 
 - **ONNX**: 여러 프로그램에서 함께 쓸 수 있는 AI 모델 파일 형식 (ONNX Runtime으로 실행)
-- **OpenVINO**: 인텔이 만든 CPU용 AI 가속 도구
+- **OpenVINO**: 인텔이 만든 CPU용 AI 가속 도구 (FP32, 32비트 소수로 계산)
+- **OpenVINO INT8 (양자화)**: 모델 안의 숫자를 32비트 소수 → **8비트 정수**로 줄여 더 작고 빠르게 만든 모델
+  - 숫자를 반올림하는 것이라 정확도가 떨어질 수 있어서, 속도와 정확도를 함께 확인했습니다.
+  - 반올림 범위를 정하는 보정(calibration)에는 **학습용 사진 800장**을 사용했습니다.
+    채점에 쓰는 검사용 사진으로 보정하면 시험 문제를 미리 본 것처럼 점수가 좋게 나올 수 있기 때문입니다.
 
 ### 속도 비교 (AMD Ryzen 5 5600, 검사용 사진 200장 × 3회)
-| 모델 형식 | 1장 추론 시간 (중앙값) | FPS | 회차별 평균 (ms) | PyTorch 대비 |
-|---|---|---|---|---|
-| PyTorch (원래 모델) | 26.5 ms | 37.7 | 28.0 / 27.3 / 27.6 | 1.00배 |
-| ONNX | 21.1 ms | 47.5 | 21.1 / 21.1 / 21.0 | **1.26배** |
-| OpenVINO | **16.6 ms** | **60.3** | 16.6 / 16.9 / 16.5 | **1.60배** |
+| 모델 형식 | 1장 추론 시간 (중앙값) | FPS | 회차별 평균 (ms) | PyTorch 대비 | 모델 크기 |
+|---|---|---|---|---|---|
+| PyTorch (원래 모델) | 25.5 ms | 39.2 | 27.1 / 26.1 / 26.2 | 1.00배 | 5.2 MB (FP16 저장) |
+| ONNX | 21.1 ms | 47.4 | 21.3 / 21.2 / 20.3 | 1.21배 | 9.4 MB |
+| OpenVINO | 15.6 ms | 64.2 | 15.9 / 16.2 / 15.5 | 1.64배 | 9.5 MB |
+| **OpenVINO INT8** | **8.3 ms** | **120.9** | 8.6 / 8.5 / 8.6 | **3.09배** | **3.2 MB** |
 
 - 모델 추론 시간만 측정했습니다. (사진 준비, 박스 정리 시간 제외 / FPS = 1000 ÷ 중앙값)
-- 3회 측정의 차이가 0.4 ms 이내로 작아서, 형식 사이의 속도 차이는 측정 오차가 아닌 실제 차이입니다.
-- **OpenVINO는 인텔이 만든 도구지만, AMD CPU에서도 1.6배 빨라졌습니다.**
-### 정확도 비교 (검사용 사진 200장, 세 모델 모두 1장씩 채점)
+- 4개 모델 모두 같은 측정에서 나온 값이고, 모델마다 새 프로그램에서 측정했습니다. (아래 '함정' 참고)
+- 3회 측정의 차이가 1 ms 이내로 작아서, 형식 사이의 속도 차이는 측정 오차가 아닌 실제 차이입니다.
+- **OpenVINO는 인텔이 만든 도구지만, AMD CPU에서도 FP32는 1.6배, INT8은 3.1배 빨라졌습니다.**
+
+### 정확도 비교 (검사용 사진 200장, 모든 모델 1장씩 채점)
 | 모델 형식 | Precision | Recall | mAP50 | mAP50-95 | helmet mAP50 | no_helmet mAP50 |
 |---|---|---|---|---|---|---|
 | PyTorch (원래 모델) | 0.923 | 0.719 | **0.794** | 0.566 | 0.880 | 0.709 |
 | ONNX | 0.926 | 0.718 | **0.793** | 0.564 | 0.878 | 0.708 |
 | OpenVINO | 0.926 | 0.718 | **0.793** | 0.564 | 0.878 | 0.708 |
+| **OpenVINO INT8** | 0.917 | 0.721 | **0.794** | 0.562 | 0.876 | 0.713 |
 
-- 전체 mAP50 차이는 **0.001**로, 형식을 바꿔도 정확도는 사실상 그대로입니다.
-- ONNX와 OpenVINO는 같은 FP32(32비트 소수) 계산이라 점수가 완전히 같았습니다.
-- PyTorch와의 아주 작은 차이는 계산 순서에 따른 소수점 끝자리 차이와, 변환 모델이 사진을 항상 640×640 정사각형으로 맞춰 넣는 차이 때문입니다.
+- ONNX와 OpenVINO(FP32)는 전체 mAP50 차이가 **0.001**로, 형식을 바꿔도 정확도는 사실상 그대로입니다.
+  - 둘은 같은 FP32 계산이라 점수가 완전히 같았습니다.
+  - PyTorch와의 아주 작은 차이는 계산 순서에 따른 소수점 끝자리 차이와, 변환 모델이 사진을 항상 640×640 정사각형으로 맞춰 넣는 차이 때문입니다.
+- **INT8도 mAP50은 0.794로 그대로**였고, 박스 위치까지 엄격하게 보는 mAP50-95만 0.004 낮아졌습니다.
 
 ### 2단계 핵심 결과
-| | PyTorch | OpenVINO |
+| | PyTorch (원래 모델) | OpenVINO INT8 |
 |---|---|---|
-| 1장 추론 시간 | 26.5 ms | **16.6 ms (1.60배 빠름)** |
-| 정확도 (mAP50) | 0.794 | **0.793 (거의 같음)** |
+| 1장 추론 시간 | 25.5 ms (39 FPS) | **8.3 ms (121 FPS, 3.09배 빠름)** |
+| 정확도 (mAP50) | 0.794 | **0.794 (그대로)** |
+| 모델 크기 | 5.2 MB | **3.2 MB** |
 
-→ **OpenVINO로 바꾸면 정확도는 그대로 두고 CPU에서 1.6배 빨라집니다.**
+→ **OpenVINO INT8로 바꾸면 정확도는 거의 그대로 두고, GPU 없이 CPU에서 3배 빨라집니다.**
+일반 영상(초당 약 30장)보다 4배 빠른 속도라, 실시간 감지에 충분한 여유가 있습니다.
 
 ### 측정하면서 발견한 함정: 처음 결과는 과장되어 있었다
-처음에는 한 프로그램 안에서 세 모델을 차례대로 측정했고, **OpenVINO가 2.95배 빠르다**는 결과가 나왔습니다.
+처음에는 한 프로그램 안에서 세 모델(PyTorch, ONNX, OpenVINO)을 차례대로 측정했고, **OpenVINO가 2.95배 빠르다**는 결과가 나왔습니다.
 그런데 회차별 결과를 보니 이상한 점이 있었습니다.
 
 | 회차 | 측정 순서 | PyTorch 평균 |
@@ -129,7 +140,7 @@ ONNX Runtime과 OpenVINO가 계산을 마친 뒤에도 일꾼(스레드)을 남�
 같은 프로그램 안의 PyTorch가 방해를 받은 것으로 보입니다.
 
 - 해결: **모델 하나를 잴 때마다 새 프로그램(프로세스)을 띄워서** 서로 방해하지 않게 측정
-- 결과: PyTorch가 모든 회차에서 27~28 ms로 일정해졌고, OpenVINO의 실제 속도 향상은 **1.60배**였습니다.
+- 결과: PyTorch가 모든 회차에서 26~28 ms로 일정해졌고, OpenVINO(FP32)의 실제 속도 향상은 **약 1.6배**였습니다. (2.95배는 과장)
 - 배운 점: 속도 비교는 숫자 하나만 보지 말고 **여러 번, 순서를 바꿔 가며** 재고, 회차별 결과가 일정한지 확인해야 한다.
 
 ---
@@ -186,14 +197,14 @@ py -3.13 -m venv .venv
 
 ### 5. CPU 최적화 (2단계)
 ```bash
-.\.venv\Scripts\python.exe -m pip install onnx onnxslim onnxruntime openvino
+.\.venv\Scripts\python.exe -m pip install onnx onnxslim onnxruntime openvino nncf
 .\.venv\Scripts\python.exe 2_optimize\export.py
 .\.venv\Scripts\python.exe 2_optimize\benchmark.py
 .\.venv\Scripts\python.exe 2_optimize\accuracy.py
 ```
-- `export.py`: `best.pt`를 ONNX(`best.onnx`)와 OpenVINO(`best_openvino_model/`)로 변환하고, 결과가 같은지 확인
-- `benchmark.py`: 세 모델의 속도를 측정 (`--rounds 3` 반복 횟수, `--images 200` 사진 수)
-- `accuracy.py`: 세 모델의 정확도(mAP)를 검사용 사진으로 채점해서 비교
+- `export.py`: `best.pt`를 ONNX(`best.onnx`), OpenVINO(`best_openvino_model/`), OpenVINO INT8(`best_int8_openvino_model/`)로 변환하고 결과가 같은지 확인 (INT8 보정은 학습용 사진, 몇 분 걸림)
+- `benchmark.py`: 모든 모델의 속도를 측정 (`--rounds 3` 반복 횟수, `--images 200` 사진 수)
+- `accuracy.py`: 모든 모델의 정확도(mAP)를 검사용 사진으로 채점해서 비교
 
 ---
 
@@ -204,9 +215,9 @@ py -3.13 -m venv .venv
   train.py              YOLO26n CPU 학습
   webcam.py             웹캠/사진 데모
 2_optimize/       CPU 최적화와 속도 비교
-  export.py             ONNX / OpenVINO 변환 + 결과 확인
-  benchmark.py          세 모델 속도 비교
-  accuracy.py           세 모델 정확도(mAP) 비교
+  export.py             ONNX / OpenVINO / INT8 변환 + 결과 확인
+  benchmark.py          모델 형식별 속도 비교
+  accuracy.py           모델 형식별 정확도(mAP) 비교
 3_alert_system/   위험 구역 경고 시스템 (예정)
 images/           README 결과 사진
 ```
@@ -223,4 +234,4 @@ images/           README 결과 사진
   - README의 결과 사진은 이 데이터셋의 검사용 사진에 모델 결과 박스를 그려 넣은 것입니다.
 
 ## 사용 기술
-Python 3.13 · Ultralytics YOLO26 · PyTorch (CPU) · OpenCV · ONNX Runtime · OpenVINO
+Python 3.13 · Ultralytics YOLO26 · PyTorch (CPU) · OpenCV · ONNX Runtime · OpenVINO · NNCF (INT8 양자화)
