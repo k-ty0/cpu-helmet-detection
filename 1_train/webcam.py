@@ -7,7 +7,7 @@
 
 키보드:
     s : 지금 화면을 images/ 폴더에 사진으로 저장
-    q : 종료
+    q 또는 ESC : 종료 (한글 입력 상태라면 ESC 가 확실해요)
 
 실행 방법 (저장소 맨 위 폴더에서):
     웹캠:          .\\.venv\\Scripts\\python.exe 1_train\\webcam.py
@@ -62,7 +62,9 @@ def main():
                         help="박스가 사라져도 몇 장 동안 유지할지 (깜박임 줄이기, 0이면 끔)")
     args = parser.parse_args()
 
-    model = YOLO(args.model)  # 학습한 모델 불러오기
+    # 학습한 모델 불러오기 (.pt 뿐 아니라 2단계에서 만든 ONNX·OpenVINO·INT8 모델도 쓸 수 있어요)
+    # task="detect": 변환한 모델은 어떤 일(물체 감지)을 하는지 파일만으로는 몰라서 알려줘요
+    model = YOLO(args.model, task="detect")
 
     # 사진 한 장이면: 결과를 그려서 창에 띄우고 끝
     if Path(args.source).suffix.lower() in {".jpg", ".jpeg", ".png"}:
@@ -85,7 +87,7 @@ def main():
     if not cap.isOpened():
         raise SystemExit("카메라/영상을 열 수 없어요. 다른 프로그램이 카메라를 쓰고 있는지 확인하세요.")
 
-    print("실행 중... (s: 사진 저장, q: 종료)")
+    print("실행 중... (s: 사진 저장, q 또는 ESC: 종료)")
     last_result, missed = None, 0  # 마지막으로 박스를 찾은 결과, 그 뒤로 못 찾은 화면 수
     infer_times = []  # 장마다 모델이 걸린 시간(초)을 모아 두는 목록 -> 끝날 때 평균 FPS 계산
     while True:
@@ -112,7 +114,9 @@ def main():
         cv2.imshow(WINDOW, frame)  # 창에 보여주기
 
         key = cv2.waitKey(1)  # 키보드 입력 확인 (-1 이면 아무 키도 안 누름)
-        if key in (ord("q"), ord("Q"), ord("ㅂ")):  # 한글 입력 상태의 q 는 'ㅂ' 으로 들어와요
+        # 27 = ESC 키: 한글 입력기(IME)를 거치지 않아서 한/영 상태와 상관없이 한 번에 종료돼요
+        # (한글 상태에서는 'ㅂ' 이 글자를 조합하는 중이라 다음 키를 눌러야 들어올 때가 있어요)
+        if key in (27, ord("q"), ord("Q"), ord("ㅂ")):  # 한글 입력 상태의 q 는 'ㅂ' 으로 들어와요
             break
         if key in (ord("s"), ord("S"), ord("ㄴ")):  # 한글 입력 상태의 s 는 'ㄴ'
             save_image(frame)
@@ -129,8 +133,8 @@ def main():
     if times:
         avg_ms = sum(times) / len(times) * 1000  # 1장 평균 처리 시간(밀리초)
         print(f"\n===== 평균 속도 ({len(times)}장 기준, 처음 10장 제외) =====")
-        print(f"1장 평균 추론 시간: {avg_ms:.1f} ms")
-        print(f"평균 FPS (모델 추론 시간만): {1000 / avg_ms:.1f}")
+        print(f"1장 평균 처리 시간 (사진 준비+추론+박스 정리): {avg_ms:.1f} ms")
+        print(f"평균 FPS (카메라 읽기·화면 그리기 제외): {1000 / avg_ms:.1f}")
     else:
         print("측정한 화면이 너무 적어요. 조금 더 오래 실행해 주세요.")
 
