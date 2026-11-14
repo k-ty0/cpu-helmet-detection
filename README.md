@@ -15,7 +15,7 @@ GPU 없이 **일반 노트북 CPU**에서 실시간으로 동작하는 **안전�
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 1 | YOLO로 안전모 착용/미착용 학습 + 웹캠 데모 (`1_train/`) | ✅ 완료 |
-| 2 | OpenVINO / ONNX로 CPU 최적화, 속도 비교 (`2_optimize/`) | 🔄 진행 중 (변환·속도 비교 완료) |
+| 2 | OpenVINO / ONNX로 CPU 최적화, 속도 비교 (`2_optimize/`) | 🔄 진행 중 (변환·속도·정확도 비교 완료) |
 | 3 | 위험 구역 경고 시스템 (`3_alert_system/`) | ⏳ 예정 |
 
 ---
@@ -95,8 +95,24 @@ helmet(0.880)보다 no_helmet(0.709) 점수가 낮고, 특히 no_helmet의 Recal
 - 모델 추론 시간만 측정했습니다. (사진 준비, 박스 정리 시간 제외 / FPS = 1000 ÷ 중앙값)
 - 3회 측정의 차이가 0.4 ms 이내로 작아서, 형식 사이의 속도 차이는 측정 오차가 아닌 실제 차이입니다.
 - **OpenVINO는 인텔이 만든 도구지만, AMD CPU에서도 1.6배 빨라졌습니다.**
-- 변환 후에도 검사용 사진에서 찾은 박스 수는 같고 확신도 차이는 0.01 정도였습니다. (`export.py` 결과)
-  정확도(mAP) 비교는 다음 단계에서 할 예정입니다.
+### 정확도 비교 (검사용 사진 200장, 세 모델 모두 1장씩 채점)
+| 모델 형식 | Precision | Recall | mAP50 | mAP50-95 | helmet mAP50 | no_helmet mAP50 |
+|---|---|---|---|---|---|---|
+| PyTorch (원래 모델) | 0.923 | 0.719 | **0.794** | 0.566 | 0.880 | 0.709 |
+| ONNX | 0.926 | 0.718 | **0.793** | 0.564 | 0.878 | 0.708 |
+| OpenVINO | 0.926 | 0.718 | **0.793** | 0.564 | 0.878 | 0.708 |
+
+- 전체 mAP50 차이는 **0.001**로, 형식을 바꿔도 정확도는 사실상 그대로입니다.
+- ONNX와 OpenVINO는 같은 FP32(32비트 소수) 계산이라 점수가 완전히 같았습니다.
+- PyTorch와의 아주 작은 차이는 계산 순서에 따른 소수점 끝자리 차이와, 변환 모델이 사진을 항상 640×640 정사각형으로 맞춰 넣는 차이 때문입니다.
+
+### 2단계 핵심 결과
+| | PyTorch | OpenVINO |
+|---|---|---|
+| 1장 추론 시간 | 26.5 ms | **16.6 ms (1.60배 빠름)** |
+| 정확도 (mAP50) | 0.794 | **0.793 (거의 같음)** |
+
+→ **OpenVINO로 바꾸면 정확도는 그대로 두고 CPU에서 1.6배 빨라집니다.**
 
 ### 측정하면서 발견한 함정: 처음 결과는 과장되어 있었다
 처음에는 한 프로그램 안에서 세 모델을 차례대로 측정했고, **OpenVINO가 2.95배 빠르다**는 결과가 나왔습니다.
@@ -173,9 +189,11 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install onnx onnxslim onnxruntime openvino
 .\.venv\Scripts\python.exe 2_optimize\export.py
 .\.venv\Scripts\python.exe 2_optimize\benchmark.py
+.\.venv\Scripts\python.exe 2_optimize\accuracy.py
 ```
 - `export.py`: `best.pt`를 ONNX(`best.onnx`)와 OpenVINO(`best_openvino_model/`)로 변환하고, 결과가 같은지 확인
 - `benchmark.py`: 세 모델의 속도를 측정 (`--rounds 3` 반복 횟수, `--images 200` 사진 수)
+- `accuracy.py`: 세 모델의 정확도(mAP)를 검사용 사진으로 채점해서 비교
 
 ---
 
@@ -188,6 +206,7 @@ py -3.13 -m venv .venv
 2_optimize/       CPU 최적화와 속도 비교
   export.py             ONNX / OpenVINO 변환 + 결과 확인
   benchmark.py          세 모델 속도 비교
+  accuracy.py           세 모델 정확도(mAP) 비교
 3_alert_system/   위험 구역 경고 시스템 (예정)
 images/           README 결과 사진
 ```
