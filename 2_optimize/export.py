@@ -10,6 +10,9 @@
 
 실행 방법 (저장소 맨 위 폴더에서):
     .\\.venv\\Scripts\\python.exe 2_optimize\\export.py
+    SHWD 로 추가 학습한 모델:
+        .\\.venv\\Scripts\\python.exe 2_optimize\\export.py --model runs\\helmet_shwd\\weights\\best.pt
+            --data datasets\\helmet_shwd\\data.yaml   (실제로는 한 줄로 이어서 써요)
 """
 
 import argparse
@@ -23,7 +26,7 @@ VAL_IMAGES = ROOT / "datasets" / "helmet" / "images" / "val"  # 검사용 사진
 DATA_YAML = ROOT / "datasets" / "helmet" / "data.yaml"  # 데이터셋 설정 파일 (INT8 보정용 사진 위치)
 
 
-def export_models(model_path, imgsz):
+def export_models(model_path, imgsz, data_yaml):
     """best.pt 를 ONNX, OpenVINO, OpenVINO INT8 형식으로 바꾸고, 만들어진 파일 경로를 돌려줘요."""
     model = YOLO(str(model_path))
     # export(내보내기): 학습한 모델을 다른 형식의 파일로 저장하는 기능
@@ -36,7 +39,7 @@ def export_models(model_path, imgsz):
     # split="train": 보정에는 '학습용' 사진을 써요.
     #   기본값은 검사용(val) 사진인데, 채점할 사진으로 보정하면 점수가 실제보다 좋게 나올 수 있어요.
     int8_path = model.export(format="openvino", imgsz=imgsz, device="cpu",
-                             quantize=8, data=str(DATA_YAML), split="train")
+                             quantize=8, data=str(data_yaml), split="train")
     return {"PyTorch": str(model_path), "ONNX": onnx_path, "OpenVINO": openvino_path,
             "INT8": int8_path}
 
@@ -66,13 +69,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default=str(DEFAULT_MODEL), help="변환할 모델 파일(.pt)")
     parser.add_argument("--imgsz", type=int, default=640, help="모델에 넣을 사진 크기(픽셀), 학습 때와 같게")
+    # INT8 보정에 쓸 사진: 모델이 배운 데이터와 같은 걸 쓰는 게 좋아요
+    # (SHWD 로 추가 학습한 모델이면 datasets\helmet_shwd\data.yaml)
+    parser.add_argument("--data", default=str(DATA_YAML), help="INT8 보정용 데이터셋 설정 파일")
     args = parser.parse_args()
 
     if not Path(args.model).exists():
         raise SystemExit(f"모델 파일이 없어요: {args.model}\n"
-                         "GitHub Releases(model-v1)에서 best.pt 를 내려받아 넣어 주세요.")
+                         "GitHub Releases(model-v1, model-v2)에서 best.pt 를 내려받아 넣어 주세요.")
 
-    paths = export_models(args.model, args.imgsz)
+    paths = export_models(args.model, args.imgsz, args.data)
     print("\n===== 만들어진 파일 =====")
     for name, path in paths.items():
         print(f"{name:9s}: {path}")
