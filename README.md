@@ -161,6 +161,42 @@ ONNX Runtime과 OpenVINO가 계산을 마친 뒤에도 일꾼(스레드)을 남�
 
 ---
 
+## 모델 개선: 가까운 얼굴 문제 해결 (SHWD 추가 학습)
+
+1단계 모델은 공사장을 **멀리서** 찍은 사진으로만 배워서, 웹캠 앞의 **가까운 얼굴**을 거의 찾지 못했습니다. (아래 한계점 2번)
+
+### 문제를 숫자로 확인
+가까이서 찍은 안전모 사진이 많은 **SHWD** 데이터셋의 검사용 사진으로 원래 모델을 채점해 봤습니다.
+공사장 사진에서는 mAP50 **0.794**였지만, SHWD 사진에서는 **0.291**밖에 나오지 않았습니다. (머리 10개 중 약 3개만 찾음, Recall 0.314)
+
+### 해결 방법
+- `1_train/prepare_shwd.py`: SHWD(VOC 형식)를 YOLO 형식으로 바꿔서 원래 데이터와 합침
+  - SHWD 이름 `hat` → helmet, `person`(안전모 안 쓴 머리) → no_helmet
+  - 안전모 사진은 전부, 교실 맨머리 사진은 너무 많아서 800장만 무작위로 사용
+  - 원래 검사용 사진 200장은 그대로 두어, 공사장 성능이 떨어지지 않았는지 비교
+- 처음부터 다시 배우지 않고, **원래 모델(best.pt)에서 출발해 25에폭 추가 학습** (파인튜닝, CPU로 약 6시간 16분)
+
+### 결과
+| 검사용 사진 | 원래 모델 | 개선 모델 |
+|---|---|---|
+| 공사장 (Construction-PPE, 200장) mAP50 | 0.794 | **0.790** (거의 그대로) |
+| 가까운 얼굴 (SHWD, 863장) mAP50 | 0.291 | **0.907** (약 3.1배) |
+| 가까운 얼굴 (SHWD) Recall | 0.314 | **0.848** |
+
+- SHWD 클래스별 mAP50: helmet **0.929**, no_helmet **0.886**
+- 새 데이터를 배우면서 원래 실력을 잊어버리지 않았습니다. (공사장 점수 차이 0.004)
+
+### 웹캠으로 직접 확인
+| | 원래 모델 | 개선 모델 |
+|---|---|---|
+| 웹캠 앞 가까운 맨머리 | 박스가 거의 안 뜸 | no_helmet, 확신도 **0.91** |
+| 모자를 쓴 가까운 머리 | 박스가 거의 안 뜸 | helmet, 확신도 **0.91** |
+| 속도 (PyTorch) | 약 36.2 FPS | 약 **32.8 FPS** (모델 크기가 같아 비슷) |
+
+- 배운 점: 점수가 낮은 원인을 **데이터의 차이(도메인 차이)** 로 보고 숫자로 확인한 뒤, 부족한 종류의 데이터를 채워서 해결했다.
+
+---
+
 ## 한계점과 개선 계획
 
 1. **no_helmet을 놓치는 경우가 있음** (Recall 0.603)
@@ -173,10 +209,18 @@ ONNX Runtime과 OpenVINO가 계산을 마친 뒤에도 일꾼(스레드)을 남�
      정면 각도의 맨머리를 no_helmet으로 감지한 경우도 있었으나 확신도는 약 0.5로 낮았음
    - 새 모델의 웹캠 실험: 머리가 보여도 박스가 잘 안 뜨고, 엉뚱한 곳에 박스가 뜨기도 함(오탐).
      박스 유지 시간을 늘리거나(`--hold 30`) 확신도 기준을 낮춰도(`--conf 0.25`) 나아지지 않아, 표시 방식이 아니라 학습 데이터 차이가 원인으로 판단
-   - 개선: 정면·근거리 사진이 많은 데이터셋(예: Hard Hat Workers) 추가 학습
+   - ✅ 해결: 근거리 사진이 많은 SHWD 데이터셋으로 추가 학습 → SHWD mAP50 0.291 → 0.907 (위 "모델 개선" 참고)
 3. **박스 깜박임**
    - 매 화면을 따로 판단해서 확신도가 기준선 근처면 박스가 켜졌다 꺼졌다 함
    - 해결: 최근 박스를 몇 장 동안 유지하는 스무딩 적용 (`webcam.py --hold`)
+4. **일반 모자도 안전모로 판단함** (개선 모델)
+   - 웹캠에서 야구 모자를 쓰자 helmet(확신도 0.91)으로 감지됨
+   - SHWD에 일반 모자를 쓴 사진이 거의 없어서 "머리에 뭔가 쓰면 안전모"로 배운 것으로 추정
+   - 개선: 일반 모자를 쓴 사진을 no_helmet으로 추가 학습
+5. **배경의 어두운 물체를 맨머리로 착각함** (개선 모델)
+   - 웹캠 뒤쪽의 검은 네모 물체에 no_helmet 박스가 떴다 사라졌다 함(오탐)
+   - SHWD 맨머리 사진은 대부분 교실에서 뒤·위에서 찍은 검은 머리라서, 어두운 덩어리를 머리로 착각한 것으로 추정
+   - 개선: 사람이 없는 배경 사진(이름표 없음)을 학습에 추가, 3단계 경고는 일정 시간 이상 계속 감지될 때만 울리기
 
 ---
 
@@ -199,6 +243,13 @@ py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe 1_train\train.py --epochs 50
 ```
 - 결과 모델: `runs/helmet/weights/best.pt` (다시 학습하면 폴더 이름 뒤에 번호가 붙음)
+
+SHWD를 합쳐서 추가 학습하기 (VOC2028.zip 을 `datasets/shwd/` 에 풀어 둔 뒤):
+```bash
+.\.venv\Scripts\python.exe 1_train\prepare_shwd.py
+.\.venv\Scripts\python.exe 1_train\train.py --data datasets\helmet_shwd\data.yaml --weights runs\helmet\weights\best.pt --name helmet_shwd --epochs 25
+```
+- 결과 모델: `runs/helmet_shwd/weights/best.pt`
 
 ### 4. 웹캠 데모
 ```bash
@@ -231,7 +282,8 @@ py -3.13 -m venv .venv
 ```
 1_train/          모델 학습 코드
   download_dataset.py   데이터셋 내려받기 + helmet/no_helmet만 남기기
-  train.py              YOLO26n CPU 학습
+  prepare_shwd.py       SHWD를 YOLO 형식으로 바꿔 원래 데이터와 합치기
+  train.py              YOLO26n CPU 학습 (--data, --weights 로 추가 학습 가능)
   webcam.py             웹캠/사진 데모
 2_optimize/       CPU 최적화와 속도 비교
   export.py             ONNX / OpenVINO / INT8 변환 + 결과 확인
@@ -252,6 +304,10 @@ images/           README 결과 사진
   - 라이선스: **CC BY 4.0** (ultralytics 패키지의 `construction-ppe.yaml` 표기 기준)
   - 변경 사항: 12개 클래스 중 `helmet`, `no_helmet` 두 개만 사용
   - README의 결과 사진은 이 데이터셋의 검사용 사진에 모델 결과 박스를 그려 넣은 것입니다.
+- **SHWD (Safety Helmet Wearing Dataset)** — njvisionpower
+  - 저장소: https://github.com/njvisionpower/Safety-Helmet-Wearing-Dataset
+  - 라이선스: **MIT**
+  - 변경 사항: `hat` → helmet, `person` → no_helmet 으로 바꾸고, 교실 맨머리 사진은 일부만 사용 (`1_train/prepare_shwd.py`)
 
 ## 사용 기술
 Python 3.13 · Ultralytics YOLO26 · PyTorch (CPU) · OpenCV · ONNX Runtime · OpenVINO · NNCF (INT8 양자화)
