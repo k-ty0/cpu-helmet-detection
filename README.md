@@ -15,7 +15,7 @@ GPU 없이 **일반 노트북 CPU**에서 실시간으로 동작하는 **안전�
 | 단계 | 내용 | 상태 |
 |---|---|---|
 | 1 | YOLO로 안전모 착용/미착용 학습 + 웹캠 데모 (`1_train/`) | ✅ 완료 |
-| 2 | OpenVINO / ONNX로 CPU 최적화, 속도 비교 (`2_optimize/`) | ⏳ 예정 |
+| 2 | OpenVINO / ONNX로 CPU 최적화, 속도 비교 (`2_optimize/`) | 🔄 진행 중 (변환·속도 비교 완료) |
 | 3 | 위험 구역 경고 시스템 (`3_alert_system/`) | ⏳ 예정 |
 
 ---
@@ -78,6 +78,46 @@ helmet(0.880)보다 no_helmet(0.709) 점수가 낮고, 특히 no_helmet의 Recal
 
 ---
 
+## 2단계 결과: CPU 최적화 (진행 중)
+
+1단계에서 학습한 모델(`best.pt`)을 **ONNX**와 **OpenVINO** 형식으로 바꾸고, 같은 조건에서 CPU 속도를 비교했습니다.
+
+- **ONNX**: 여러 프로그램에서 함께 쓸 수 있는 AI 모델 파일 형식 (ONNX Runtime으로 실행)
+- **OpenVINO**: 인텔이 만든 CPU용 AI 가속 도구
+
+### 속도 비교 (AMD Ryzen 5 5600, 검사용 사진 200장 × 3회)
+| 모델 형식 | 1장 추론 시간 (중앙값) | FPS | 회차별 평균 (ms) | PyTorch 대비 |
+|---|---|---|---|---|
+| PyTorch (원래 모델) | 26.5 ms | 37.7 | 28.0 / 27.3 / 27.6 | 1.00배 |
+| ONNX | 21.1 ms | 47.5 | 21.1 / 21.1 / 21.0 | **1.26배** |
+| OpenVINO | **16.6 ms** | **60.3** | 16.6 / 16.9 / 16.5 | **1.60배** |
+
+- 모델 추론 시간만 측정했습니다. (사진 준비, 박스 정리 시간 제외 / FPS = 1000 ÷ 중앙값)
+- 3회 측정의 차이가 0.4 ms 이내로 작아서, 형식 사이의 속도 차이는 측정 오차가 아닌 실제 차이입니다.
+- **OpenVINO는 인텔이 만든 도구지만, AMD CPU에서도 1.6배 빨라졌습니다.**
+- 변환 후에도 검사용 사진에서 찾은 박스 수는 같고 확신도 차이는 0.01 정도였습니다. (`export.py` 결과)
+  정확도(mAP) 비교는 다음 단계에서 할 예정입니다.
+
+### 측정하면서 발견한 함정: 처음 결과는 과장되어 있었다
+처음에는 한 프로그램 안에서 세 모델을 차례대로 측정했고, **OpenVINO가 2.95배 빠르다**는 결과가 나왔습니다.
+그런데 회차별 결과를 보니 이상한 점이 있었습니다.
+
+| 회차 | 측정 순서 | PyTorch 평균 |
+|---|---|---|
+| 1회차 | **PyTorch** → ONNX → OpenVINO | 27.3 ms |
+| 2회차 | ONNX → OpenVINO → **PyTorch** | 49.5 ms |
+| 3회차 | OpenVINO → **PyTorch** → ONNX | 48.3 ms |
+
+PyTorch는 ONNX·OpenVINO를 실행한 **뒤에만** 2배 가까이 느려졌습니다.
+ONNX Runtime과 OpenVINO가 계산을 마친 뒤에도 일꾼(스레드)을 남겨 두면서 CPU를 함께 쓰게 되어,
+같은 프로그램 안의 PyTorch가 방해를 받은 것으로 보입니다.
+
+- 해결: **모델 하나를 잴 때마다 새 프로그램(프로세스)을 띄워서** 서로 방해하지 않게 측정
+- 결과: PyTorch가 모든 회차에서 27~28 ms로 일정해졌고, OpenVINO의 실제 속도 향상은 **1.60배**였습니다.
+- 배운 점: 속도 비교는 숫자 하나만 보지 말고 **여러 번, 순서를 바꿔 가며** 재고, 회차별 결과가 일정한지 확인해야 한다.
+
+---
+
 ## 한계점과 개선 계획
 
 1. **no_helmet을 놓치는 경우가 있음** (Recall 0.603)
@@ -128,6 +168,15 @@ py -3.13 -m venv .venv
 
 키보드: `s` 화면 저장(`images/`), `q` 또는 창의 X 버튼으로 종료
 
+### 5. CPU 최적화 (2단계)
+```bash
+.\.venv\Scripts\python.exe -m pip install onnx onnxslim onnxruntime openvino
+.\.venv\Scripts\python.exe 2_optimize\export.py
+.\.venv\Scripts\python.exe 2_optimize\benchmark.py
+```
+- `export.py`: `best.pt`를 ONNX(`best.onnx`)와 OpenVINO(`best_openvino_model/`)로 변환하고, 결과가 같은지 확인
+- `benchmark.py`: 세 모델의 속도를 측정 (`--rounds 3` 반복 횟수, `--images 200` 사진 수)
+
 ---
 
 ## 폴더 구조
@@ -136,7 +185,9 @@ py -3.13 -m venv .venv
   download_dataset.py   데이터셋 내려받기 + helmet/no_helmet만 남기기
   train.py              YOLO26n CPU 학습
   webcam.py             웹캠/사진 데모
-2_optimize/       CPU 최적화와 속도 비교 (예정)
+2_optimize/       CPU 최적화와 속도 비교
+  export.py             ONNX / OpenVINO 변환 + 결과 확인
+  benchmark.py          세 모델 속도 비교
 3_alert_system/   위험 구역 경고 시스템 (예정)
 images/           README 결과 사진
 ```
@@ -153,4 +204,4 @@ images/           README 결과 사진
   - README의 결과 사진은 이 데이터셋의 검사용 사진에 모델 결과 박스를 그려 넣은 것입니다.
 
 ## 사용 기술
-Python 3.13 · Ultralytics YOLO26 · PyTorch (CPU) · OpenCV
+Python 3.13 · Ultralytics YOLO26 · PyTorch (CPU) · OpenCV · ONNX Runtime · OpenVINO
