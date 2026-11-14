@@ -87,6 +87,7 @@ def main():
 
     print("실행 중... (s: 사진 저장, q: 종료)")
     last_result, missed = None, 0  # 마지막으로 박스를 찾은 결과, 그 뒤로 못 찾은 화면 수
+    infer_times = []  # 장마다 모델이 걸린 시간(초)을 모아 두는 목록 -> 끝날 때 평균 FPS 계산
     while True:
         ok, frame = cap.read()  # 한 장(프레임) 읽기
         if not ok:  # 영상이 끝났거나 카메라 오류
@@ -94,7 +95,9 @@ def main():
 
         start = time.perf_counter()  # 처리 시작 시간
         result = model(frame, conf=args.conf, verbose=False)[0]  # 안전모 찾기
-        fps = 1.0 / (time.perf_counter() - start)  # 1장 처리 시간 -> 초당 장수
+        elapsed = time.perf_counter() - start  # 1장 처리에 걸린 시간(초)
+        fps = 1.0 / elapsed  # 1장 처리 시간 -> 초당 장수
+        infer_times.append(elapsed)
 
         # 깜박임 줄이기(스무딩): 박스가 잠깐 사라져도 바로 지우지 않고
         # 최근에 찾은 결과를 hold 장 동안 계속 보여줘요
@@ -119,6 +122,17 @@ def main():
 
     cap.release()  # 카메라 놓아주기 (다른 프로그램이 쓸 수 있게)
     cv2.destroyAllWindows()  # 창 닫기
+
+    # 평균 FPS 출력 (README 에 적을 값)
+    # 처음 몇 장은 준비(워밍업) 때문에 느려서 앞의 10장은 빼고 계산해요
+    times = infer_times[10:]
+    if times:
+        avg_ms = sum(times) / len(times) * 1000  # 1장 평균 처리 시간(밀리초)
+        print(f"\n===== 평균 속도 ({len(times)}장 기준, 처음 10장 제외) =====")
+        print(f"1장 평균 추론 시간: {avg_ms:.1f} ms")
+        print(f"평균 FPS (모델 추론 시간만): {1000 / avg_ms:.1f}")
+    else:
+        print("측정한 화면이 너무 적어요. 조금 더 오래 실행해 주세요.")
 
 
 if __name__ == "__main__":
