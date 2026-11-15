@@ -16,7 +16,7 @@ GPU 없이 **일반 노트북 CPU**에서 실시간으로 동작하는 **안전�
 |---|---|---|
 | 1 | YOLO로 안전모 착용/미착용 학습 + 웹캠 데모 (`1_train/`) | ✅ 완료 |
 | 2 | OpenVINO / ONNX로 CPU 최적화, INT8 양자화, 속도·정확도 비교 (`2_optimize/`) | ✅ 완료 |
-| 3 | 위험 구역 경고 시스템 (`3_alert_system/`) | ⏳ 예정 |
+| 3 | 위험 구역 경고 시스템 (`3_alert_system/`) | 🔨 진행 중 |
 
 ---
 
@@ -201,6 +201,43 @@ ONNX Runtime과 OpenVINO가 계산을 마친 뒤에도 일꾼(스레드)을 남�
 
 ---
 
+## 3단계 (진행 중): 위험 구역 경고 시스템
+
+화면에 **위험 구역**을 정해 두고, 구역 안에 **안전모를 안 쓴 사람**이 있으면 경고합니다. (`3_alert_system/alert.py`)
+
+- 마우스로 꼭짓점을 클릭해서 구역(다각형)을 정하고 `zone.json`에 저장
+- 머리 박스의 **중심점**이 구역 안에 있는지로 판단 (`cv2.pointPolygonTest`)
+- 구역 안 + no_helmet → 빨간 `DANGER`, 구역 안 + helmet → 초록, 구역 밖 → 회색
+
+### 테스트 영상
+웹캠(가까운 얼굴)은 모델이 배운 환경과 달라서, **공사 현장 영상**으로 테스트했습니다.
+Mixkit의 무료 영상 4개를 사용했고, 모두 상업적 사용까지 가능한 **Mixkit Stock Video Free License**입니다. (영상 파일은 저장소에 올리지 않음)
+
+| 영상 (Mixkit 번호) | 내용 | 결과 |
+|---|---|---|
+| 1440 | 작업자가 안전모를 쓰는 장면 | 맨머리 no_helmet 0.93 → 착용 후 helmet 0.92 |
+| 1436 | 안전모 쓴 2명 | 모든 장면 helmet (평균 0.91), 잘못된 경고 0번 |
+| 1443 | 안전모 쓴 1명 | 모든 장면 helmet (평균 0.91) |
+| 1459 | 안전모 안 쓴 작업자들 | no_helmet (평균 0.70), 뒤쪽 작은 사람까지 감지 |
+
+### 안전 우선 규칙
+1459 영상의 **뒤쪽 작업자**(멀고 어둡고 흐릿함)가 가끔 초록(helmet)으로 바뀌었습니다.
+한 사람만 따라가 보니 대부분 no_helmet인데 중간에 helmet이 **14장 연속**(확신도 0.3~0.6) 나와서, 0.5초 투표로는 막지 못했습니다.
+
+- 해결: 최근 **1초** 동안 그 머리에 나온 판단 중 **no_helmet 표가 30% 이상이면 위험**으로 판단 (`--danger-window`, `--danger-ratio`)
+- 이유: 안전모 안 쓴 사람을 **놓치는 것**이, 쓴 사람에게 한 번 더 경고하는 것보다 훨씬 위험하기 때문
+- 기준값은 기록을 바탕으로 0.5~2초, 20~30%를 시뮬레이션해서 정했습니다.
+
+| 영상 (화면 전체를 구역으로) | 바꾸기 전 | 바꾼 뒤 |
+|---|---|---|
+| 1459 (맨머리) — 초록으로 잘못 바뀐 박스 | 16개 | **0개** |
+| 1436 (안전모 2명) — 잘못된 경고 | 0개 | **0개** |
+| 1440 (안전모 쓰는 장면) — 빨간 박스 | 48개 | 58개 (착용 후 약 0.4초 동안 빨강이 남음) |
+
+- 대가: 안전모를 쓴 직후 잠깐(약 0.4초) 경고가 남지만, 놓치는 것보다 낫다고 판단했습니다.
+
+---
+
 ## 한계점과 개선 계획
 
 1. **no_helmet을 놓치는 경우가 있음** (Recall 0.603)
@@ -287,6 +324,16 @@ SHWD를 합쳐서 추가 학습하기 (VOC2028.zip 을 `datasets/shwd/` 에 풀�
 - `accuracy.py`: 모든 모델의 정확도(mAP)를 검사용 사진으로 채점해서 비교
 - `plot_speed.py`: 속도 비교 그래프(`images/speed_comparison.png`) 그리기 (`benchmark.py` 결과 숫자를 옮겨 적어 사용)
 
+### 6. 위험 구역 경고 (3단계)
+테스트 영상: [Mixkit 1459](https://mixkit.co/free-stock-video/construction-workers-at-a-house-under-construction-1459/)를 내려받아 `datasets/videos/mixkit_1459.mp4`로 저장
+```bash
+.\.venv\Scripts\python.exe 3_alert_system\alert.py --setup --source datasets\videos\mixkit_1459.mp4 --zone 3_alert_system\zone_1459.json
+.\.venv\Scripts\python.exe 3_alert_system\alert.py --source datasets\videos\mixkit_1459.mp4 --zone 3_alert_system\zone_1459.json
+```
+- 첫 줄: 첫 장면을 멈춰 놓고 마우스로 구역 그리기 (Enter 저장, r 다시 그리기). `zone_1459.json`이 이미 있으면 건너뛰어도 됨
+- 둘째 줄: 경고 화면 실행 (영상은 반복 재생, `--once`면 한 번만). 끝나면 구역 안 빨간/초록 박스 수를 요약
+- 웹캠으로 하려면 `--source`, `--zone`을 빼고 실행 (구역은 `3_alert_system/zone.json`에 저장)
+
 ---
 
 ## 폴더 구조
@@ -301,7 +348,9 @@ SHWD를 합쳐서 추가 학습하기 (VOC2028.zip 을 `datasets/shwd/` 에 풀�
   benchmark.py          모델 형식별 속도 비교
   accuracy.py           모델 형식별 정확도(mAP) 비교
   plot_speed.py         속도 비교 그래프 그리기
-3_alert_system/   위험 구역 경고 시스템 (예정)
+3_alert_system/   위험 구역 경고 시스템
+  alert.py              위험 구역 정하기(--setup) + 경고 화면
+  zone_1459.json        테스트 영상(Mixkit 1459)용 위험 구역 좌표
 images/           README 결과 사진
 ```
 데이터셋(`datasets/`), 학습 결과(`runs/`), 모델 파일(`*.pt`, `*.onnx`)은 용량 때문에 저장소에 올리지 않습니다.
@@ -319,6 +368,10 @@ images/           README 결과 사진
   - 저장소: https://github.com/njvisionpower/Safety-Helmet-Wearing-Dataset
   - 라이선스: **MIT**
   - 변경 사항: `hat` → helmet, `person` → no_helmet 으로 바꾸고, 교실 맨머리 사진은 일부만 사용 (`1_train/prepare_shwd.py`)
+- **테스트 영상 (3단계)** — Mixkit 1436, 1440, 1443, 1459
+  - 사이트: https://mixkit.co/free-stock-video/construction/
+  - 라이선스: **Mixkit Stock Video Free License** (상업적 사용 가능, 출처 표시 필수 아님) — https://mixkit.co/license/
+  - 영상 파일은 저장소에 올리지 않습니다.
 
 ## 사용 기술
 Python 3.13 · Ultralytics YOLO26 · PyTorch (CPU) · OpenCV · ONNX Runtime · OpenVINO · NNCF (INT8 양자화)
