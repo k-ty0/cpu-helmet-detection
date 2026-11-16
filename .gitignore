@@ -229,3 +229,7 @@ datasets/
 runs/
 # GPU 학습용 가상환경 (CUDA 버전 PyTorch)
 .venv-gpu/
+# 경고 기록(사진·csv) - 웹캠이면 얼굴이 찍히니 올리지 않음
+3_alert_system/logs/
+# 웹캠 화면 기준 위험 구역 (내 환경 전용)
+3_alert_system/zone.json

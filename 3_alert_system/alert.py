@@ -7,6 +7,7 @@
     - 구역 안 + 안전모 씀(helmet)       -> 안전 (초록색)
     - 구역 밖                          -> 연한 색으로만 표시
     - 위험이 1초 이상 계속되면 경고: 화면 위 빨간 띠 + Windows 경고음 (--alert-after, --no-sound)
+    - 경고 기록: 3_alert_system/logs/ 에 경고마다 화면 사진(.jpg)과 표(.csv) 한 줄 (--no-log 로 끄기)
 
 1) 먼저 위험 구역 정하기 (한 번만 하면 zone.json 에 저장돼요):
     .\\.venv\\Scripts\\python.exe 3_alert_system\\alert.py --setup
@@ -25,10 +26,12 @@
 """
 
 import argparse
+import csv  # 경고 기록을 엑셀로 열 수 있는 표 파일(.csv)로 저장하는 도구
 import json  # 구역 좌표를 파일(zone.json)로 저장하고 읽는 도구
 import sys
 import time
 from collections import deque
+from datetime import datetime  # 경고가 울린 실제 날짜·시각
 from pathlib import Path
 
 import cv2
@@ -45,6 +48,8 @@ sys.path.insert(0, str(ROOT / "1_train"))  # 1_train/webcam.py 의 함수를 가
 from webcam import get_boxes, iou, smooth_box  # noqa: E402 (경로를 추가한 뒤에 불러와야 해서 여기 있어요)
 
 ZONE_FILE = Path(__file__).resolve().parent / "zone.json"  # 위험 구역 좌표를 저장할 파일
+LOG_DIR = Path(__file__).resolve().parent / "logs"  # 경고 기록(csv)과 사진을 저장할 폴더 (커밋 안 함)
+LOG_COLUMNS = ["번호", "시작 시각", "영상 속 시간(초)", "위험 인원", "지속 시간(초)", "사진"]
 DEFAULT_MODEL = ROOT / "runs" / "helmet_shwd" / "weights" / "best_int8_openvino_model"  # 개선 모델 INT8
 WINDOW = "danger zone"
 
@@ -167,6 +172,42 @@ def draw_banner(frame, text, color):
     cv2.putText(frame, text, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
 
+class AlertLog:
+    """경고 기록 담당: 경고가 시작되면 화면 사진을 저장하고, 끝나면 표(csv)에 한 줄 적어요.
+
+    한 번 실행할 때마다 csv 파일이 하나 만들어져요. 예: logs/alerts_20261117_153000.csv
+    """
+
+    def __init__(self, log_dir):
+        self.dir = Path(log_dir)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.stamp = datetime.now().strftime("%Y%m%d_%H%M%S")  # 이번 실행을 구분하는 이름
+        self.csv_path = self.dir / f"alerts_{self.stamp}.csv"
+        # utf-8-sig: 엑셀에서 열어도 한글이 안 깨지게 해 줘요
+        with open(self.csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            csv.writer(f).writerow(LOG_COLUMNS)  # 첫 줄 = 제목 줄
+        self.current = None  # 지금 울리고 있는 경고 정보 (없으면 None)
+
+    def start(self, no, video_sec, people, frame):
+        """경고가 시작된 순간: 화면 사진을 저장하고 정보를 기억해 둬요."""
+        photo = self.dir / f"alert_{self.stamp}_{no:03d}.jpg"  # 예: alert_20261117_153000_001.jpg
+        cv2.imwrite(str(photo), frame)
+        self.current = {"번호": no, "시작 시각": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "영상 속 시간(초)": round(video_sec, 1), "위험 인원": people,
+                        "사진": photo.name, "_start": video_sec}
+
+    def end(self, video_sec):
+        """경고가 끝난 순간: 얼마나 계속됐는지 계산해서 csv 에 한 줄 적어요."""
+        if self.current is None:
+            return
+        row = self.current
+        row["지속 시간(초)"] = round(video_sec - row["_start"], 1)
+        # "a" = 뒤에 이어 쓰기 (한글 표시 BOM 은 맨 앞에 한 번만 있으면 돼서 여기선 utf-8)
+        with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow([row[c] for c in LOG_COLUMNS])
+        self.current = None
+
+
 def draw_zone(frame, zone, danger):
     """위험 구역을 반투명하게 칠해요. 위험한 사람이 있으면 빨간색, 없으면 노란색."""
     color = RED if danger else YELLOW
@@ -191,9 +232,12 @@ def run(args):
     counts = {"frames": 0, "red": 0, "green": 0, "alerts": 0, "alert_time": 0.0}  # 끝날 때 요약할 숫자
     danger_since = None  # 위험이 '연속으로' 시작된 시각 (위험이 아니면 None)
     alerting, last_beep, prev_now = False, 0.0, None  # 경고 중인지, 마지막 경고음 시각, 직전 장의 시각
+    log = AlertLog(args.log_dir) if args.log else None  # 경고 기록 담당 (--no-log 면 기록 안 함)
     while True:
         ok, frame = cap.read()
         if not ok:
+            if log and prev_now is not None:
+                log.end(prev_now)  # 영상이 끝날 때 울리던 경고가 있으면 여기서 마무리
             if is_file and not args.once:  # 영상이 끝나면 처음으로 되감아서 계속 반복 (시연용)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 last_boxes, history = [], deque()  # 이전 바퀴의 박스 기억은 지워요
@@ -273,19 +317,27 @@ def run(args):
                 beep()
                 last_beep = wall
             draw_banner(frame, f"WARNING! NO HELMET IN DANGER ZONE  ({danger_for:.1f}s)", RED)
+            if log and not was_alerting:  # 경고 시작 순간의 화면(박스·띠 포함)을 사진으로 남겨요
+                log.start(counts["alerts"], now, sum(inside and risky for *_, inside, risky in people), frame)
         elif danger:  # 위험하지만 아직 alert_after 초가 안 됨 -> 주의 표시만
             draw_banner(frame, f"checking...  {danger_for:.1f} / {args.alert_after:.1f}s", (0, 140, 255))
+        if log and was_alerting and not alerting:  # 경고가 막 끝남 -> 기록에 한 줄 적기
+            log.end(now)
         prev_now = now
 
         cv2.imshow(WINDOW, frame)
         key = cv2.waitKey(1)
         if key in (27, ord("q"), ord("Q"), ord("ㅂ")) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
             break
+    if log and prev_now is not None:
+        log.end(prev_now)  # ESC 로 끝낼 때 울리던 경고가 있으면 마무리해서 기록
     cap.release()
     cv2.destroyAllWindows()
     print(f"\n===== 요약 ({counts['frames']}장) =====")
     print(f"구역 안 빨간 박스(위험): {counts['red']}개 / 구역 안 초록 박스(안전): {counts['green']}개")
     print(f"경고 {counts['alerts']}번, 경고가 울린 시간 총 {counts['alert_time']:.1f}초")
+    if log:
+        print(f"경고 기록: {log.csv_path}")
 
 
 def main():
@@ -309,6 +361,9 @@ def main():
     # BooleanOptionalAction: --sound / --no-sound 두 가지로 켜고 끌 수 있어요
     parser.add_argument("--sound", action=argparse.BooleanOptionalAction, default=True,
                         help="경고음 켜기/끄기 (--no-sound 로 끄기)")
+    parser.add_argument("--log", action=argparse.BooleanOptionalAction, default=True,
+                        help="경고 기록(csv + 사진) 남기기 켜기/끄기 (--no-log 로 끄기)")
+    parser.add_argument("--log-dir", default=str(LOG_DIR), help="경고 기록을 저장할 폴더")
     args = parser.parse_args()
 
     if args.setup:
