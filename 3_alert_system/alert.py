@@ -6,6 +6,7 @@
       안전 우선: 최근 1초 동안 no_helmet 판단이 30% 이상 섞여 있어도 위험으로 봐요
     - 구역 안 + 안전모 씀(helmet)       -> 안전 (초록색)
     - 구역 밖                          -> 연한 색으로만 표시
+    - 위험이 1초 이상 계속되면 경고: 화면 위 빨간 띠 + Windows 경고음 (--alert-after, --no-sound)
 
 1) 먼저 위험 구역 정하기 (한 번만 하면 zone.json 에 저장돼요):
     .\\.venv\\Scripts\\python.exe 3_alert_system\\alert.py --setup
@@ -33,6 +34,11 @@ from pathlib import Path
 import cv2
 import numpy as np  # 좌표 목록을 OpenCV 가 원하는 배열 형태로 바꾸는 데 써요
 from ultralytics import YOLO
+
+try:
+    import winsound  # Windows 에 들어 있는 소리 내는 도구 (설치 필요 없음)
+except ImportError:  # Windows 가 아니면 없어요 -> 소리 없이 화면 경고만
+    winsound = None
 
 ROOT = Path(__file__).resolve().parent.parent  # 저장소 맨 위 폴더
 sys.path.insert(0, str(ROOT / "1_train"))  # 1_train/webcam.py 의 함수를 가져다 쓰려고 경로 추가
@@ -145,6 +151,22 @@ def no_helmet_share(box, history, names):
     return votes["no_helmet"] / total if total else 0.0
 
 
+def beep():
+    """Windows 경고음을 울려요.
+
+    SND_ASYNC: 소리가 나는 동안 기다리지 않고 바로 다음 일을 해요 (안 그러면 화면이 멈춰요)
+    """
+    if winsound is not None:
+        winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+
+
+def draw_banner(frame, text, color):
+    """화면 맨 위에 색깔 띠를 깔고 글자를 써요."""
+    w = frame.shape[1]  # 화면 너비
+    cv2.rectangle(frame, (0, 0), (w, 50), color, -1)  # -1: 테두리가 아니라 꽉 채우기
+    cv2.putText(frame, text, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
+
+
 def draw_zone(frame, zone, danger):
     """위험 구역을 반투명하게 칠해요. 위험한 사람이 있으면 빨간색, 없으면 노란색."""
     color = RED if danger else YELLOW
@@ -166,7 +188,9 @@ def run(args):
     history = deque()
     keep = max(args.smooth, args.danger_window)  # 기록은 둘 중 더 긴 시간만큼 보관
     frame_no, start = 0, time.perf_counter()
-    counts = {"frames": 0, "red": 0, "green": 0}  # 끝날 때 요약해서 보여 줄 숫자
+    counts = {"frames": 0, "red": 0, "green": 0, "alerts": 0, "alert_time": 0.0}  # 끝날 때 요약할 숫자
+    danger_since = None  # 위험이 '연속으로' 시작된 시각 (위험이 아니면 None)
+    alerting, last_beep, prev_now = False, 0.0, None  # 경고 중인지, 마지막 경고음 시각, 직전 장의 시각
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -174,6 +198,7 @@ def run(args):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 last_boxes, history = [], deque()  # 이전 바퀴의 박스 기억은 지워요
                 frame_no, start = 0, time.perf_counter()
+                danger_since, alerting, prev_now = None, False, None  # 경고 상태도 처음부터
                 continue
             break
         result = model(frame, conf=args.conf, verbose=False)[0]
@@ -225,6 +250,33 @@ def run(args):
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(frame, label, (x1, max(y1 - 6, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
+        # ===== 경고 판단: 위험이 alert_after 초 이상 '계속'되면 경고 =====
+        # 잠깐 스쳐 지나가는 사람이나 한두 장의 잘못된 판단으로는 경고가 울리지 않게 해요
+        if danger:
+            if danger_since is None:
+                danger_since = now  # 위험이 막 시작됨 -> 시각 기억
+            danger_for = now - danger_since  # 위험이 몇 초째 계속되는지
+        else:
+            danger_since, danger_for = None, 0.0  # 위험이 끊기면 처음부터 다시 셈
+        was_alerting = alerting
+        alerting = danger and danger_for >= args.alert_after
+
+        if alerting:
+            if not was_alerting:  # 경고가 새로 시작된 순간
+                counts["alerts"] += 1
+                print(f"[경고 {counts['alerts']}] 위험 구역에 안전모 미착용자 ({now:.1f}초)")
+            if prev_now is not None:
+                counts["alert_time"] += now - prev_now  # 경고가 울린 총 시간
+            # 경고음: 시작할 때 한 번, 경고가 계속되면 beep_every 초마다 다시
+            wall = time.perf_counter()
+            if args.sound and (not was_alerting or wall - last_beep >= args.beep_every):
+                beep()
+                last_beep = wall
+            draw_banner(frame, f"WARNING! NO HELMET IN DANGER ZONE  ({danger_for:.1f}s)", RED)
+        elif danger:  # 위험하지만 아직 alert_after 초가 안 됨 -> 주의 표시만
+            draw_banner(frame, f"checking...  {danger_for:.1f} / {args.alert_after:.1f}s", (0, 140, 255))
+        prev_now = now
+
         cv2.imshow(WINDOW, frame)
         key = cv2.waitKey(1)
         if key in (27, ord("q"), ord("Q"), ord("ㅂ")) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
@@ -233,6 +285,7 @@ def run(args):
     cv2.destroyAllWindows()
     print(f"\n===== 요약 ({counts['frames']}장) =====")
     print(f"구역 안 빨간 박스(위험): {counts['red']}개 / 구역 안 초록 박스(안전): {counts['green']}개")
+    print(f"경고 {counts['alerts']}번, 경고가 울린 시간 총 {counts['alert_time']:.1f}초")
 
 
 def main():
@@ -250,6 +303,12 @@ def main():
     parser.add_argument("--danger-ratio", type=float, default=0.3,
                         help="안전 우선 규칙: no_helmet 표가 이 비율 이상이면 위험으로 봐요 (0~1)")
     parser.add_argument("--smooth", type=float, default=0.5, help="최근 몇 초 결과로 크기·색을 정할지")
+    parser.add_argument("--alert-after", type=float, default=1.0,
+                        help="위험이 몇 초 이상 계속되면 경고할지")
+    parser.add_argument("--beep-every", type=float, default=2.0, help="경고가 계속될 때 몇 초마다 경고음을 낼지")
+    # BooleanOptionalAction: --sound / --no-sound 두 가지로 켜고 끌 수 있어요
+    parser.add_argument("--sound", action=argparse.BooleanOptionalAction, default=True,
+                        help="경고음 켜기/끄기 (--no-sound 로 끄기)")
     args = parser.parse_args()
 
     if args.setup:

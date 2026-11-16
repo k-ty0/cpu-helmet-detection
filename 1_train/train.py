@@ -10,6 +10,8 @@
         .\\.venv\\Scripts\\python.exe 1_train\\train.py --data datasets\\helmet_shwd\\data.yaml
             --weights runs\\helmet\\weights\\best.pt --name helmet_shwd --epochs 30
         (실제로는 한 줄로 이어서 써요)
+    GPU 로 학습 (NVIDIA GPU + GPU 용 가상환경 .venv-gpu 필요):
+        .\\.venv-gpu\\Scripts\\python.exe 1_train\\train.py --epochs 50 --device 0
 """
 
 import argparse  # 실행할 때 --epochs 같은 옵션을 받을 수 있게 해 주는 도구
@@ -31,6 +33,8 @@ def main():
     parser.add_argument("--weights", default="yolo26n.pt",
                         help="출발점 모델 (기본: 미리 학습된 YOLO26 nano / 이어서 학습하려면 best.pt)")
     parser.add_argument("--name", default="helmet", help="결과 폴더 이름 (runs/이름)")
+    parser.add_argument("--device", default="cpu",
+                        help="학습 장치: cpu 또는 0 (0 = 첫 번째 NVIDIA GPU, .venv-gpu 에서 실행해야 해요)")
     args = parser.parse_args()
 
     if not Path(args.data).exists():
@@ -47,7 +51,7 @@ def main():
         epochs=args.epochs,  # 몇 번 반복할지
         imgsz=args.imgsz,  # 사진 크기
         batch=16,  # 한 번에 몇 장씩 묶어서 볼지
-        device="cpu",  # GPU 없이 CPU 로 학습
+        device=args.device,  # 기본은 CPU, GPU 로 하려면 --device 0
         workers=4,  # 사진을 미리 읽어 오는 일꾼 수
         project=str(RUNS_DIR),  # 결과 저장 폴더
         name=args.name,  # 결과 폴더 이름 (runs/helmet, 같은 이름으로 또 하면 helmet2 ...)

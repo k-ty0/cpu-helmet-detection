@@ -31,6 +31,16 @@ GPU 없이 **일반 노트북 CPU**에서 실시간으로 동작하는 **안전�
 | 학습 방법 | 사전학습 모델에서 시작하는 전이학습, 50에폭, 이미지 크기 640 |
 | 학습 시간 | 약 2시간 28분 (CPU만 사용) |
 
+> **GPU 학습도 추가했습니다.** 이 PC의 NVIDIA GeForce RTX 5060 (8GB)으로 학습하면 훨씬 빠릅니다.
+> 실제 현장처럼 **학습은 GPU로 빠르게, 실행(추론)은 GPU 없는 CPU에서** 하는 구성입니다.
+>
+> | 같은 조건 1에폭 (SHWD 합친 데이터, 학습 사진 4,156장) | 걸린 시간 |
+> |---|---|
+> | CPU (Ryzen 5 5600) | 약 15분 18초 (0.255시간) |
+> | GPU (RTX 5060) | 약 1분 19초 (0.022시간) → **약 11.6배 빠름** |
+>
+> GPU 버전 PyTorch(`torch 2.15.0+cu132`)는 CPU용과 섞이지 않게 가상환경 `.venv-gpu`를 따로 만들어 설치했습니다.
+
 ### 성능 (검사용 사진 200장)
 | 클래스 | Precision (정밀도) | Recall (재현율) | mAP50 | mAP50-95 |
 |---|---|---|---|---|
@@ -208,6 +218,9 @@ ONNX Runtime과 OpenVINO가 계산을 마친 뒤에도 일꾼(스레드)을 남�
 - 마우스로 꼭짓점을 클릭해서 구역(다각형)을 정하고 `zone.json`에 저장
 - 머리 박스의 **중심점**이 구역 안에 있는지로 판단 (`cv2.pointPolygonTest`)
 - 구역 안 + no_helmet → 빨간 `DANGER`, 구역 안 + helmet → 초록, 구역 밖 → 회색
+- 위험이 **1초 이상 계속**되면 경고: 화면 위 빨간 띠 + Windows 경고음 (`--alert-after`, `--no-sound`)
+  - 1초 전에는 주황 띠로 `checking... 0.4 / 1.0s` 표시, 잠깐 스쳐 가는 사람이나 한두 장의 잘못된 판단으로는 울리지 않음
+  - 결과: 1459(맨머리) 경고 1번(1.0초에 시작) / 1436(안전모 2명) 경고 0번 / 1440(안전모 쓰는 장면) 경고 0번
 
 ### 테스트 영상
 웹캠(가까운 얼굴)은 모델이 배운 환경과 달라서, **공사 현장 영상**으로 테스트했습니다.
@@ -297,6 +310,14 @@ SHWD를 합쳐서 추가 학습하기 (VOC2028.zip 을 `datasets/shwd/` 에 풀�
 .\.venv\Scripts\python.exe 1_train\train.py --data datasets\helmet_shwd\data.yaml --weights runs\helmet\weights\best.pt --name helmet_shwd --epochs 25
 ```
 - 결과 모델: `runs/helmet_shwd/weights/best.pt`
+
+GPU로 학습하기 (NVIDIA GPU, 예: RTX 50 시리즈 → CUDA 13.2 버전 PyTorch):
+```bash
+py -3.13 -m venv .venv-gpu
+.\.venv-gpu\Scripts\python.exe -m pip install torch==2.15.0 "torchvision==0.29.*" --index-url https://download.pytorch.org/whl/cu132
+.\.venv-gpu\Scripts\python.exe -m pip install ultralytics==8.4.212
+.\.venv-gpu\Scripts\python.exe 1_train\train.py --epochs 50 --device 0
+```
 
 ### 4. 웹캠 데모
 ```bash
