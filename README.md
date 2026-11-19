@@ -1,12 +1,17 @@
 # cpu-helmet-detection
 
-GPU 없이 **일반 노트북 CPU**에서 실시간으로 동작하는 **안전모 착용 감지 AI**
+GPU 없이 **일반 CPU**에서 실시간으로 동작하는 **안전모 착용 감지 + 위험 구역 경고 AI** (YOLO26n · OpenCV · OpenVINO)
 
-카메라 영상에서 사람의 머리를 찾아 **안전모를 썼는지(helmet) / 안 썼는지(no_helmet)** 를 구분합니다.
+<img src="images/alert_demo.gif" width="640" alt="위험 구역 경고 데모">
 
-![결과 예시](images/result_example1.jpg)
+> 빨간 영역 = 위험 구역. 구역 안에 안전모를 안 쓴 사람이 있으면 `DANGER` → 주황 띠 `checking...` → **1초 이상 계속되면 빨간 `WARNING`** + 경고음 + 기록 저장
+> (AMD Ryzen 5 5600 CPU, OpenVINO INT8 모델 / 테스트 영상: Mixkit 1459, Mixkit Stock Video Free License)
 
-> 초록 박스 = helmet(착용), 빨간 박스 = no_helmet(미착용), 숫자 = 모델의 확신도(0~1)
+### 핵심 결과
+- ⚡ **CPU에서 3배 빠르게**: OpenVINO INT8 변환으로 1장 추론 25.5 ms → **8.3 ms (3.09배, 약 121 FPS)**, 정확도 mAP50 **0.794 그대로**
+- 🎯 **약점을 데이터로 해결**: 가까운 얼굴을 못 찾던 문제를 SHWD 추가 학습으로 개선, 가까운 얼굴 mAP50 **0.291 → 0.907**
+- 🚨 **현장용 경고 시스템**: 위험 구역 안 미착용 상태가 **1초 이상** 계속되면 경고음 + 화면 사진·csv 기록 (잠깐 스친 사람은 경고 안 함)
+- 🖥️ **학습은 GPU, 실행은 CPU**: RTX 5060 학습이 CPU보다 1에폭 **약 11.6배 빠름**, 실제 감지는 GPU 없는 CPU에서 실행
 
 ---
 
@@ -17,6 +22,11 @@ GPU 없이 **일반 노트북 CPU**에서 실시간으로 동작하는 **안전�
 | 1 | YOLO로 안전모 착용/미착용 학습 + 웹캠 데모 (`1_train/`) | ✅ 완료 |
 | 2 | OpenVINO / ONNX로 CPU 최적화, INT8 양자화, 속도·정확도 비교 (`2_optimize/`) | ✅ 완료 |
 | 3 | 위험 구역 경고 시스템: 구역 설정, 1초 이상 위험 시 경고음, 경고 기록 (`3_alert_system/`) | ✅ 완료 |
+
+### 감지 결과 예시
+![결과 예시](images/result_example1.jpg)
+
+> 초록 박스 = helmet(착용), 빨간 박스 = no_helmet(미착용), 숫자 = 모델의 확신도(0~1)
 
 ---
 
@@ -374,6 +384,7 @@ py -3.13 -m venv .venv-gpu
 | `--danger-window 1.0`, `--danger-ratio 0.3` | 안전 우선 규칙: 최근 1초 중 no_helmet 판단이 30% 이상이면 위험 |
 | `--no-sound` | 경고음 끄기 (`--beep-every 2.0`: 경고가 계속될 때 몇 초마다 다시 울릴지) |
 | `--no-log` | 경고 기록 안 남기기 (`--log-dir`: 저장 폴더) |
+| `--save-gif 경로` | 경고 화면을 GIF로 저장 (영상은 한 번만 재생, `--gif-fps 10`, `--gif-width 640`). README 맨 위 GIF를 이렇게 만들었음 |
 - 웹캠으로 하려면 `--source`, `--zone`을 빼고 실행 (구역은 `3_alert_system/zone.json`에 저장)
 
 ---

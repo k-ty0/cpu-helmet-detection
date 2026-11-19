@@ -8,6 +8,7 @@
     - 구역 밖                          -> 연한 색으로만 표시
     - 위험이 1초 이상 계속되면 경고: 화면 위 빨간 띠 + Windows 경고음 (--alert-after, --no-sound)
     - 경고 기록: 3_alert_system/logs/ 에 경고마다 화면 사진(.jpg)과 표(.csv) 한 줄 (--no-log 로 끄기)
+    - 데모 GIF 저장: --save-gif 경로 (README 에 넣을 움직이는 그림, 영상 파일은 한 번만 재생)
 
 1) 먼저 위험 구역 정하기 (한 번만 하면 zone.json 에 저장돼요):
     .\\.venv\\Scripts\\python.exe 3_alert_system\\alert.py --setup
@@ -23,6 +24,9 @@
 영상 파일로 할 때 (첫 장면을 멈춰 놓고 구역을 그려요, 실행하면 영상이 반복 재생돼요):
     .\\.venv\\Scripts\\python.exe 3_alert_system\\alert.py --setup --source datasets\\videos\\mixkit_1459.mp4 --zone 3_alert_system\\zone_1459.json
     .\\.venv\\Scripts\\python.exe 3_alert_system\\alert.py --source datasets\\videos\\mixkit_1459.mp4 --zone 3_alert_system\\zone_1459.json
+
+README 데모 GIF 만들기 (경고 화면을 그대로 GIF 로 저장, 소리·기록은 끄고):
+    .\\.venv\\Scripts\\python.exe 3_alert_system\\alert.py --source datasets\\videos\\mixkit_1459.mp4 --zone 3_alert_system\\zone_1459.json --save-gif images\\alert_demo.gif --no-sound --no-log
 """
 
 import argparse
@@ -36,6 +40,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np  # 좌표 목록을 OpenCV 가 원하는 배열 형태로 바꾸는 데 써요
+from PIL import Image  # Pillow: 사진을 다루는 도구 (여기서는 GIF 저장용)
 from ultralytics import YOLO
 
 try:
@@ -208,6 +213,30 @@ class AlertLog:
         self.current = None
 
 
+def to_gif_frame(frame, width):
+    """GIF 에 넣을 한 장: 폭을 width 로 줄이고, OpenCV 색 순서(BGR)를 Pillow 순서(RGB)로 바꿔요."""
+    h, w = frame.shape[:2]
+    # INTER_AREA: 사진을 줄일 때 깔끔하게 줄여 주는 방식
+    small = cv2.resize(frame, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
+
+
+def save_gif(frames, path, fps):
+    """모은 장면들을 GIF 하나로 저장해요.
+
+    GIF 는 한 장에 색을 256개까지만 쓸 수 있어서, 첫 장면으로 '색 팔레트(쓸 색 목록)'를 만들고
+    모든 장면을 그 팔레트로 맞춰요. 장면마다 팔레트가 다르면 색이 번쩍거리고 용량도 커져요.
+    """
+    palette = frames[0].quantize(colors=256)  # quantize: 색을 256개로 줄이기
+    # dither(점을 흩뿌려 색을 섞어 보이게 하는 것)를 끄면 용량이 작아져요
+    frames = [f.quantize(palette=palette, dither=Image.Dither.NONE) for f in frames]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # duration: 한 장을 보여 주는 시간(ms), loop=0: 무한 반복, optimize: 용량 줄이기
+    frames[0].save(path, save_all=True, append_images=frames[1:], duration=round(1000 / fps), loop=0,
+                   optimize=True)
+    print(f"GIF 저장: {path} ({len(frames)}장, {path.stat().st_size / 1024 / 1024:.1f} MB)")
+
+
 def draw_zone(frame, zone, danger):
     """위험 구역을 반투명하게 칠해요. 위험한 사람이 있으면 빨간색, 없으면 노란색."""
     color = RED if danger else YELLOW
@@ -225,6 +254,11 @@ def run(args):
     print("실행 중... (ESC 또는 q: 종료)")
 
     fps = cap.get(cv2.CAP_PROP_FPS) or 30  # 영상의 초당 장 수 (모르면 30으로)
+    gif_frames, gif_step = None, 1
+    if args.save_gif:
+        gif_frames = []  # GIF 에 넣을 장면들
+        gif_step = max(1, round(fps / args.gif_fps))  # 예: 초당 24장 영상, gif_fps 10 -> 2장마다 1장
+        args.once = True  # GIF 는 영상 한 바퀴만 (반복하면 끝나지 않아요)
     last_boxes, last_seen = [], 0.0  # 웹캠 데모와 같은 깜박임 줄이기
     history = deque()
     keep = max(args.smooth, args.danger_window)  # 기록은 둘 중 더 긴 시간만큼 보관
@@ -325,6 +359,9 @@ def run(args):
             log.end(now)
         prev_now = now
 
+        if gif_frames is not None and (counts["frames"] - 1) % gif_step == 0:  # 몇 장마다 한 장만 골라 담아요
+            gif_frames.append(to_gif_frame(frame, args.gif_width))
+
         cv2.imshow(WINDOW, frame)
         key = cv2.waitKey(1)
         if key in (27, ord("q"), ord("Q"), ord("ㅂ")) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
@@ -333,6 +370,8 @@ def run(args):
         log.end(prev_now)  # ESC 로 끝낼 때 울리던 경고가 있으면 마무리해서 기록
     cap.release()
     cv2.destroyAllWindows()
+    if gif_frames:
+        save_gif(gif_frames, Path(args.save_gif), fps / gif_step)
     print(f"\n===== 요약 ({counts['frames']}장) =====")
     print(f"구역 안 빨간 박스(위험): {counts['red']}개 / 구역 안 초록 박스(안전): {counts['green']}개")
     print(f"경고 {counts['alerts']}번, 경고가 울린 시간 총 {counts['alert_time']:.1f}초")
@@ -364,6 +403,9 @@ def main():
     parser.add_argument("--log", action=argparse.BooleanOptionalAction, default=True,
                         help="경고 기록(csv + 사진) 남기기 켜기/끄기 (--no-log 로 끄기)")
     parser.add_argument("--log-dir", default=str(LOG_DIR), help="경고 기록을 저장할 폴더")
+    parser.add_argument("--save-gif", help="경고 화면을 GIF 로 저장할 경로 (예: images/alert_demo.gif)")
+    parser.add_argument("--gif-fps", type=float, default=10, help="GIF 의 초당 장 수 (적을수록 용량이 작아요)")
+    parser.add_argument("--gif-width", type=int, default=640, help="GIF 의 폭(픽셀)")
     args = parser.parse_args()
 
     if args.setup:
