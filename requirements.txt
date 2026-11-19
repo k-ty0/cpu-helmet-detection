@@ -1,0 +1,20 @@
+# 이 프로젝트에 필요한 도구 목록 (CPU 실행용 .venv, Python 3.13)
+# 설치: .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+# 버전은 README 결과를 실제로 측정한 환경 그대로 고정했어요 (== : 이 버전만 설치)
+# GPU 학습용 .venv-gpu 는 PyTorch 를 따로 설치해요 (README 실행 방법 "3. 학습"의 "GPU로 학습하기" 참고)
+
+# 1단계: 학습, 웹캠 데모 / 3단계: 위험 구역 경고
+ultralytics==8.4.212    # YOLO 모델 (학습, 감지)
+torch==2.15.0           # PyTorch: AI 모델 계산 도구 (CPU 버전)
+torchvision==0.29.2     # PyTorch 의 사진 처리 도구
+opencv-python==5.0.0.93 # 카메라 영상 읽기, 화면 그리기
+numpy==2.4.6            # 숫자 배열 계산
+pillow==13.0.0          # 사진 다루기 (데모 GIF 저장)
+matplotlib==3.11.2      # 그래프 그리기 (속도 비교 그래프)
+
+# 2단계: CPU 최적화 (ONNX / OpenVINO / INT8 변환)
+onnx==1.23.2            # ONNX 모델 형식
+onnxslim==0.1.99        # ONNX 모델 다듬기 (변환할 때 ultralytics 가 사용)
+onnxruntime==1.32.0     # ONNX 모델 실행
+openvino==2026.4.1      # 인텔 CPU 최적화 도구 (AMD CPU 에서도 빨라짐)
+nncf==3.4.0             # INT8 양자화 도구

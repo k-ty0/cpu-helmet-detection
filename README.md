@@ -312,8 +312,9 @@ Mixkit의 무료 영상 4개를 사용했고, 모두 상업적 사용까지 가�
 ### 1. 설치
 ```bash
 py -3.13 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install ultralytics opencv-python
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
+- `requirements.txt`: 1~3단계에 필요한 도구 전체 (README 결과를 측정한 버전으로 고정)
 
 ### 2. 데이터셋 내려받기
 ```bash
@@ -358,7 +359,6 @@ py -3.13 -m venv .venv-gpu
 
 ### 5. CPU 최적화 (2단계)
 ```bash
-.\.venv\Scripts\python.exe -m pip install onnx onnxslim onnxruntime openvino nncf
 .\.venv\Scripts\python.exe 2_optimize\export.py
 .\.venv\Scripts\python.exe 2_optimize\benchmark.py
 .\.venv\Scripts\python.exe 2_optimize\accuracy.py
@@ -402,9 +402,10 @@ py -3.13 -m venv .venv-gpu
   accuracy.py           모델 형식별 정확도(mAP) 비교
   plot_speed.py         속도 비교 그래프 그리기
 3_alert_system/   위험 구역 경고 시스템
-  alert.py              위험 구역 정하기(--setup) + 경고 화면·경고음 + 경고 기록(logs/)
+  alert.py              위험 구역 정하기(--setup) + 경고 화면·경고음 + 경고 기록(logs/) + 데모 GIF 저장(--save-gif)
   zone_1459.json        테스트 영상(Mixkit 1459)용 위험 구역 좌표
-images/           README 결과 사진
+images/           README 결과 사진, 데모 GIF
+requirements.txt  설치할 도구 목록 (pip install -r requirements.txt)
 ```
 데이터셋(`datasets/`), 학습 결과(`runs/`), 모델 파일(`*.pt`, `*.onnx`)은 용량 때문에 저장소에 올리지 않습니다.
 
