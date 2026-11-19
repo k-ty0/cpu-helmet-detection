@@ -11,6 +11,7 @@ opencv-python==5.0.0.93 # 카메라 영상 읽기, 화면 그리기
 numpy==2.4.6            # 숫자 배열 계산
 pillow==13.0.0          # 사진 다루기 (데모 GIF 저장)
 matplotlib==3.11.2      # 그래프 그리기 (속도 비교 그래프)
+lap==0.5.14             # 사람 추적(ByteTrack)에서 박스와 사람을 짝짓는 계산 도구
 
 # 2단계: CPU 최적화 (ONNX / OpenVINO / INT8 변환)
 onnx==1.23.2            # ONNX 모델 형식

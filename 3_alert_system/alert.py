@@ -8,6 +8,8 @@
     - 구역 밖                          -> 연한 색으로만 표시
     - 위험이 1초 이상 계속되면 경고: 화면 위 빨간 띠 + Windows 경고음 (--alert-after, --no-sound)
     - 경고 기록: 3_alert_system/logs/ 에 경고마다 화면 사진(.jpg)과 표(.csv) 한 줄 (--no-log 로 끄기)
+    - 사람 추적: 사람마다 번호(#1, #2 ...)를 붙이고 위험했던 시간을 따로 재요 (--no-track 로 끄기)
+    - 현장 통계: 화면 아래에 사람 수, 착용/미착용, 착용률 표시 (--no-stats 로 끄기)
     - 데모 GIF 저장: --save-gif 경로 (README 에 넣을 움직이는 그림, 영상 파일은 한 번만 재생)
 
 1) 먼저 위험 구역 정하기 (한 번만 하면 zone.json 에 저장돼요):
@@ -54,7 +56,7 @@ from webcam import get_boxes, iou, smooth_box  # noqa: E402 (경로를 추가한
 
 ZONE_FILE = Path(__file__).resolve().parent / "zone.json"  # 위험 구역 좌표를 저장할 파일
 LOG_DIR = Path(__file__).resolve().parent / "logs"  # 경고 기록(csv)과 사진을 저장할 폴더 (커밋 안 함)
-LOG_COLUMNS = ["번호", "시작 시각", "영상 속 시간(초)", "위험 인원", "지속 시간(초)", "사진"]
+LOG_COLUMNS = ["번호", "시작 시각", "영상 속 시간(초)", "위험 인원", "위험 ID", "지속 시간(초)", "사진"]
 DEFAULT_MODEL = ROOT / "runs" / "helmet_shwd" / "weights" / "best_int8_openvino_model"  # 개선 모델 INT8
 WINDOW = "danger zone"
 
@@ -177,6 +179,25 @@ def draw_banner(frame, text, color):
     cv2.putText(frame, text, (15, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
 
 
+def draw_stats(frame, people):
+    """화면 왼쪽 아래에 현장 통계(사람 수, 착용/미착용, 착용률)를 써요.
+
+    미착용은 화면의 빨간 박스와 같은 기준(안전 우선 규칙 포함)으로 세요.
+    OpenCV 글자 함수는 한글을 못 써서 영어로 표시해요.
+    """
+    total = len(people)
+    no_helmet = sum(risky for *_, risky in people)
+    helmet = total - no_helmet
+    in_zone_n = sum(inside for *_, inside, _ in people)
+    rate = f"{helmet / total * 100:.0f}%" if total else "-"  # 사람이 없으면 비율 대신 '-'
+    text = f"People {total} | Helmet {helmet} | No helmet {no_helmet} | Helmet rate {rate} | In zone {in_zone_n}"
+    h = frame.shape[0]
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)  # 글자가 차지할 크기
+    cv2.rectangle(frame, (0, h - th - 20), (tw + 20, h), (40, 40, 40), -1)  # 글자 뒤 어두운 바탕
+    cv2.putText(frame, text, (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    return total, helmet
+
+
 class AlertLog:
     """경고 기록 담당: 경고가 시작되면 화면 사진을 저장하고, 끝나면 표(csv)에 한 줄 적어요.
 
@@ -193,13 +214,17 @@ class AlertLog:
             csv.writer(f).writerow(LOG_COLUMNS)  # 첫 줄 = 제목 줄
         self.current = None  # 지금 울리고 있는 경고 정보 (없으면 None)
 
-    def start(self, no, video_sec, people, frame):
-        """경고가 시작된 순간: 화면 사진을 저장하고 정보를 기억해 둬요."""
+    def start(self, no, video_sec, risky_ids, frame):
+        """경고가 시작된 순간: 화면 사진을 저장하고 정보를 기억해 둬요.
+
+        risky_ids: 위험한 사람들의 추적 번호 목록 (추적을 안 하면 None 들이 들어 있어요)
+        """
         photo = self.dir / f"alert_{self.stamp}_{no:03d}.jpg"  # 예: alert_20261117_153000_001.jpg
         cv2.imwrite(str(photo), frame)
+        ids = " ".join(f"#{i}" for i in risky_ids if i is not None)  # 예: "#1 #3"
         self.current = {"번호": no, "시작 시각": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "영상 속 시간(초)": round(video_sec, 1), "위험 인원": people,
-                        "사진": photo.name, "_start": video_sec}
+                        "영상 속 시간(초)": round(video_sec, 1), "위험 인원": len(risky_ids),
+                        "위험 ID": ids, "사진": photo.name, "_start": video_sec}
 
     def end(self, video_sec):
         """경고가 끝난 순간: 얼마나 계속됐는지 계산해서 csv 에 한 줄 적어요."""
@@ -211,6 +236,16 @@ class AlertLog:
         with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerow([row[c] for c in LOG_COLUMNS])
         self.current = None
+
+
+def get_ids(result):
+    """모델 결과에서 박스마다의 추적 번호(ID)를 꺼내요. get_boxes 와 같은 순서예요.
+
+    추적을 안 했거나 아직 번호가 없으면 None 으로 채워요.
+    """
+    if result.boxes.id is None:
+        return [None] * len(result.boxes)
+    return [int(i) for i in result.boxes.id]
 
 
 def to_gif_frame(frame, width):
@@ -263,10 +298,15 @@ def run(args):
     history = deque()
     keep = max(args.smooth, args.danger_window)  # 기록은 둘 중 더 긴 시간만큼 보관
     frame_no, start = 0, time.perf_counter()
-    counts = {"frames": 0, "red": 0, "green": 0, "alerts": 0, "alert_time": 0.0}  # 끝날 때 요약할 숫자
+    counts = {"frames": 0, "red": 0, "green": 0, "alerts": 0, "alert_time": 0.0,
+              "people": 0, "helmet": 0}  # 끝날 때 요약할 숫자
     danger_since = None  # 위험이 '연속으로' 시작된 시각 (위험이 아니면 None)
     alerting, last_beep, prev_now = False, 0.0, None  # 경고 중인지, 마지막 경고음 시각, 직전 장의 시각
     log = AlertLog(args.log_dir) if args.log else None  # 경고 기록 담당 (--no-log 면 기록 안 함)
+    new_round = True  # 추적을 새로 시작해야 하는지 (처음, 영상을 되감았을 때)
+    last_ids = []  # last_boxes 와 같은 순서의 추적 번호들
+    danger_time = {}  # 추적 번호 -> 위험 구역에서 안전모 없이 있었던 시간(초)
+    seen_ids = set()  # 지금까지 화면에 나온 추적 번호들 (몇 명을 봤는지 세려고)
     while True:
         ok, frame = cap.read()
         if not ok:
@@ -277,9 +317,17 @@ def run(args):
                 last_boxes, history = [], deque()  # 이전 바퀴의 박스 기억은 지워요
                 frame_no, start = 0, time.perf_counter()
                 danger_since, alerting, prev_now = None, False, None  # 경고 상태도 처음부터
+                new_round, last_ids, danger_time = True, [], {}  # 추적 번호와 사람별 위험 시간도 처음부터
                 continue
             break
-        result = model(frame, conf=args.conf, verbose=False)[0]
+        if args.track:
+            # track: 감지 + 추적. 앞 장면의 사람과 이어 붙여서 박스마다 번호(ID)를 붙여요.
+            # persist=True: 앞 장면 기억을 이어 써요. 새 바퀴 첫 장면만 False 로 해서 기억을 새로 시작해요.
+            result = model.track(frame, conf=args.conf, persist=not new_round, tracker=args.tracker,
+                                 verbose=False)[0]
+        else:
+            result = model(frame, conf=args.conf, verbose=False)[0]  # 추적 없이 감지만
+        new_round = False
 
         # 시간 재기: 영상 파일은 '영상 속 시간'(몇 번째 장 / 초당 장 수)을 써요.
         # 컴퓨터가 영상보다 빨리 처리해도 1초는 영상 속 1초가 되게 하려고요.
@@ -293,40 +341,55 @@ def run(args):
             now = time.perf_counter()
 
         boxes = get_boxes(result)
+        ids = get_ids(result)  # boxes 와 같은 순서의 추적 번호 (추적을 안 하면 모두 None)
+        seen_ids.update(i for i in ids if i is not None)
         history.append((now, boxes))
         while history and now - history[0][0] > keep:
             history.popleft()
         recent = [h for h in history if now - h[0] <= args.smooth]  # 크기·색 정하기는 최근 smooth 초만
         if boxes:
-            last_boxes, last_seen = boxes, now
+            last_boxes, last_ids, last_seen = boxes, ids, now
         shown = []
         if last_boxes and now - last_seen <= args.hold:
-            shown = [smooth_box(xyxy, cls, conf, recent) for xyxy, cls, conf in last_boxes]
+            # zip: 두 목록을 같은 순서끼리 짝지어요 (박스, 그 박스의 번호)
+            shown = [(*smooth_box(xyxy, cls, conf, recent), tid) for (xyxy, cls, conf), tid in zip(last_boxes, last_ids)]
 
         # 안전 우선 규칙: 최근 danger_window 초 동안 no_helmet 표가 danger_ratio 이상이면 '위험'
         # (안전모를 안 쓴 사람을 놓치는 것이, 쓴 사람을 한 번 더 경고하는 것보다 훨씬 위험하니까요)
         names = result.names
-        people = []  # (박스, 확신도, 구역 안인지, 위험인지)
-        for xyxy, cls, conf in shown:
+        dt = now - prev_now if prev_now is not None else 0.0  # 직전 장면에서 지금까지 흐른 시간
+        people = []  # (박스, 클래스, 확신도, 추적 번호, 구역 안인지, 위험인지)
+        for xyxy, cls, conf, tid in shown:
             inside = in_zone(zone, xyxy)
             risky = names[cls] == "no_helmet" or no_helmet_share(xyxy, history, names) >= args.danger_ratio
-            people.append((xyxy, cls, conf, inside, risky))
+            if inside and risky and tid is not None:
+                danger_time[tid] = danger_time.get(tid, 0.0) + dt  # 이 사람의 위험 시간 쌓기
+            people.append((xyxy, cls, conf, tid, inside, risky))
         danger = any(inside and risky for *_, inside, risky in people)
         draw_zone(frame, zone, danger)
         counts["frames"] += 1
         counts["red"] += sum(inside and risky for *_, inside, risky in people)
         counts["green"] += sum(inside and not risky for *_, inside, risky in people)
 
-        for (x1, y1, x2, y2), cls, conf, inside, risky in people:
+        for (x1, y1, x2, y2), cls, conf, tid, inside, risky in people:
             name = names[cls]
+            tag = f"#{tid} " if tid is not None else ""  # 추적 번호 표시 (예: "#3 ")
             if not inside:
-                color, label = GRAY, f"{name} {conf:.2f}"  # 구역 밖: 회색
+                color, label = GRAY, f"{tag}{name} {conf:.2f}"  # 구역 밖: 회색
             elif risky:
-                color, label = RED, "DANGER no_helmet"  # 구역 안 + 안전모 안 씀(또는 의심)
+                # 구역 안 + 안전모 안 씀(또는 의심). 이 사람이 위험했던 시간을 같이 보여 줘요
+                sec = f" {danger_time.get(tid, 0.0):.1f}s" if tid is not None else ""
+                color, label = RED, f"{tag}DANGER{sec}"
             else:
-                color, label = GREEN, f"{name} {conf:.2f}"  # 구역 안 + 안전모 씀
+                color, label = GREEN, f"{tag}{name} {conf:.2f}"  # 구역 안 + 안전모 씀
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(frame, label, (x1, max(y1 - 6, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+        # 현장 통계 표시 (경고 사진에도 찍히게 경고 판단보다 먼저 그려요, 끝날 때 평균 착용률도 계산)
+        if args.stats:
+            total, helmet = draw_stats(frame, people)
+            counts["people"] += total
+            counts["helmet"] += helmet
 
         # ===== 경고 판단: 위험이 alert_after 초 이상 '계속'되면 경고 =====
         # 잠깐 스쳐 지나가는 사람이나 한두 장의 잘못된 판단으로는 경고가 울리지 않게 해요
@@ -352,7 +415,8 @@ def run(args):
                 last_beep = wall
             draw_banner(frame, f"WARNING! NO HELMET IN DANGER ZONE  ({danger_for:.1f}s)", RED)
             if log and not was_alerting:  # 경고 시작 순간의 화면(박스·띠 포함)을 사진으로 남겨요
-                log.start(counts["alerts"], now, sum(inside and risky for *_, inside, risky in people), frame)
+                risky_ids = [tid for _, _, _, tid, inside, risky in people if inside and risky]
+                log.start(counts["alerts"], now, risky_ids, frame)
         elif danger:  # 위험하지만 아직 alert_after 초가 안 됨 -> 주의 표시만
             draw_banner(frame, f"checking...  {danger_for:.1f} / {args.alert_after:.1f}s", (0, 140, 255))
         if log and was_alerting and not alerting:  # 경고가 막 끝남 -> 기록에 한 줄 적기
@@ -375,6 +439,15 @@ def run(args):
     print(f"\n===== 요약 ({counts['frames']}장) =====")
     print(f"구역 안 빨간 박스(위험): {counts['red']}개 / 구역 안 초록 박스(안전): {counts['green']}개")
     print(f"경고 {counts['alerts']}번, 경고가 울린 시간 총 {counts['alert_time']:.1f}초")
+    if args.stats and counts["people"]:
+        # 평균 착용률 = 모든 장면의 착용 박스 수 합 / 모든 장면의 사람 박스 수 합
+        print(f"평균 착용률 {counts['helmet'] / counts['people'] * 100:.1f}% "
+              f"(장면마다 센 사람 {counts['people']}명 중 착용 {counts['helmet']}명)")
+    if args.track:
+        print(f"추적한 사람(번호) {len(seen_ids)}명")
+        # 위험 시간이 긴 사람부터 (sorted ... reverse=True: 큰 값부터 줄 세우기)
+        for tid, sec in sorted(danger_time.items(), key=lambda x: x[1], reverse=True):
+            print(f"  #{tid}: 위험 구역에서 안전모 없이 {sec:.1f}초")
     if log:
         print(f"경고 기록: {log.csv_path}")
 
@@ -403,6 +476,11 @@ def main():
     parser.add_argument("--log", action=argparse.BooleanOptionalAction, default=True,
                         help="경고 기록(csv + 사진) 남기기 켜기/끄기 (--no-log 로 끄기)")
     parser.add_argument("--log-dir", default=str(LOG_DIR), help="경고 기록을 저장할 폴더")
+    parser.add_argument("--track", action=argparse.BooleanOptionalAction, default=True,
+                        help="사람 추적(번호 붙이기) 켜기/끄기 (--no-track 로 끄면 예전처럼 감지만)")
+    parser.add_argument("--tracker", default="bytetrack.yaml", help="추적 방법 설정 (ultralytics 기본 ByteTrack)")
+    parser.add_argument("--stats", action=argparse.BooleanOptionalAction, default=True,
+                        help="화면 아래 현장 통계(사람 수, 착용률) 표시 켜기/끄기 (--no-stats 로 끄기)")
     parser.add_argument("--save-gif", help="경고 화면을 GIF 로 저장할 경로 (예: images/alert_demo.gif)")
     parser.add_argument("--gif-fps", type=float, default=10, help="GIF 의 초당 장 수 (적을수록 용량이 작아요)")
     parser.add_argument("--gif-width", type=int, default=640, help="GIF 의 폭(픽셀)")
